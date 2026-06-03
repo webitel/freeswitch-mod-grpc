@@ -638,6 +638,9 @@ public:
         }
         if (event_->getVar("variable_wbt_originate") == "true") {
             addAttribute("originate", true);
+            if (switch_event_get_header(e, "variable_wbt_bt_queue_id") || switch_event_get_header(e, "variable_wbt_bt_agent_id")) {
+                addAttribute("is_consult_to_queue", true);
+            }
         }
 
         if (event_->getVar("variable_wbt_record_screen") == "true") {
@@ -685,9 +688,6 @@ public:
 
         setVideoMediaFlow();
         addIfExists(body_,"meeting_id", "variable_sip_h_X-Webitel-Meeting");
-        if (switch_event_get_header(e, "variable_wbt_bt_queue_id") || switch_event_get_header(e, "variable_wbt_bt_agent_id")) {
-            addAttribute("is_consult_to_queue", true);
-        }
     };
 };
 
