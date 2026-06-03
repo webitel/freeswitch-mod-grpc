@@ -216,9 +216,9 @@ void mod_grpc::CallManager::handle_call_event(switch_event_t *event) {
                     }
                 }
 
-                if (!id) {
-                    DUMP_EVENT(event)
-                }
+                // if (!id) {
+                    // DUMP_EVENT(event)
+                // }
                 if (id && content_type && strcmp(content_type, "application/json") == 0 && body) {
                     switch_status_t status = SWITCH_STATUS_FALSE;
                     switch_core_session_message_t msg = { 0 };
