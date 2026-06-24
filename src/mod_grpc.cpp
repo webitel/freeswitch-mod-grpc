@@ -733,6 +733,15 @@ namespace mod_grpc {
                     switch_ivr_sleep(session, 50, SWITCH_TRUE, NULL);
                 }
             }
+
+            if (switch_channel_test_flag(channel, CF_BROADCAST)) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "broadcast: stop prev music\n");
+                switch_channel_stop_broadcast(channel);
+            } else {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "broadcast: stop prev music\n");
+                switch_channel_set_flag_value(channel, CF_BREAK, 2);
+            }
+
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "broadcast: %s\n",
                               request->args().c_str());
             switch_core_session_rwunlock(session);
