@@ -1609,6 +1609,14 @@ namespace mod_grpc {
                     read_frame = switch_core_media_bug_get_read_replace_frame(bug);
                     bool ok;
 
+                    if (!read_frame || !read_frame->datalen || switch_test_flag(read_frame, SFF_CNG)) {
+                        switch_log_printf(
+                            SWITCH_CHANNEL_SESSION_LOG(ud->session),
+                            SWITCH_LOG_DEBUG,
+                            "GRPC stream: skip SFF_CNG\n");
+                        break;
+                    }
+
                     if (ud->rresampler) {
                         uint8_t resample_data[SWITCH_RECOMMENDED_BUFFER_SIZE];
                         auto data = (int16_t *) read_frame->data;

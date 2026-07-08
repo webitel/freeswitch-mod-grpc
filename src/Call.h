@@ -827,6 +827,9 @@ public:
         if (sip_hangup_phrase.empty()) {
             sip_hangup_phrase = get_str(switch_event_get_header(e, "variable_sip_invite_failure_phrase"));
         }
+        if (sip_hangup_phrase.empty()) {
+            sip_hangup_phrase  = get_str(switch_event_get_header(e, "variable_sip_bye_h_X-Webitel-Hangup"));
+        }
 
         // DEV-5528
         auto variable_last_bridge_to = get_str(switch_event_get_header(e, "variable_last_bridge_to"));
