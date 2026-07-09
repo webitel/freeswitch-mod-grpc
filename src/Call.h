@@ -745,7 +745,7 @@ public:
         }
 
         if (event_->getVar("variable_wbt_hide_number") == "true") {
-            addAttribute("hideNumber", true);
+            addAttribute("hide_number", true);
         }
 
         addAttribute("to", toJson(to));
@@ -796,7 +796,7 @@ class CallEvent<Update> : public BaseCallEvent {
 public:
     explicit CallEvent(switch_event_t *e) : BaseCallEvent(Update, e) {
         if (event_->getVar("variable_wbt_hide_number") == "true") {
-            addAttribute("hideNumber", true);
+            addAttribute("hide_number", true);
         }
 
         if (event_->getVar("variable_wbt_record_screen") == "true") {
