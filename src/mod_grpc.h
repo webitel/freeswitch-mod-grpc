@@ -6,6 +6,7 @@ extern "C" {
 #include <switch_curl.h>
 #include <sys/select.h>
 #include <speex/speex_resampler.h>
+#include <speex/speex_preprocess.h>
 }
 
 #include <thread>
@@ -60,7 +61,14 @@ namespace mod_grpc {
         switch_core_session_t *session;
         switch_channel_t *channel;
         VoiceBotCall *client_;
-        switch_audio_resampler_t *rresampler;
+        SpeexResamplerState *rresampler;
+        float hpf_prev_in, hpf_prev_out;
+        float hpf_alpha;
+        // speex_preprocess: AGC + denoise. Replaces the biquad HPF and fixed gain.
+        SpeexPreprocessState *pp;
+        size_t pp_frame_size;   // fixed frame in samples (20 ms @ model_rate)
+        spx_int16_t *pp_buf;    // framer accumulator, size = pp_frame_size
+        size_t pp_buf_len;      // current fill
     };
 
     struct RecognizeStream {

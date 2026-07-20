@@ -16,6 +16,7 @@
 
 #include "Cluster.h"
 #include "switch_core.h"
+#include <cmath>
 
 #define BUG_STREAM_NAME "wbt_amd"
 #define MODEL_RATE 8000
@@ -1545,109 +1546,197 @@ namespace mod_grpc {
     }
 
     static switch_bool_t ai_voice_bot_audio_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type) {
-        auto *ud = static_cast<VoiceBotStream *>(user_data);
+      auto *ud = static_cast<VoiceBotStream *>(user_data);
 
-        switch (type) {
-            case SWITCH_ABC_TYPE_INIT: {
-                // connect
-                try {
-                    if (switch_core_media_bug_test_flag(bug, SMBF_ANSWER_REQ)) {
-                        switch_core_media_bug_clear_flag(bug, SMBF_ANSWER_REQ);
-                    }
+      switch (type) {
+          case SWITCH_ABC_TYPE_INIT: {
+              try {
+                  if (switch_core_media_bug_test_flag(bug, SMBF_ANSWER_REQ)) {
+                      switch_core_media_bug_clear_flag(bug, SMBF_ANSWER_REQ);
+                  }
 
-                    //                    switch_core_session_get_read_impl(ud->session, &ud->read_impl);
+                  // Resampler (channel → model rate)
+                  if (ud->client_->model_rate != ud->client_->channel_rate) {
+                      int err;
+                      ud->rresampler = speex_resampler_init(1,
+                                                            ud->client_->channel_rate,
+                                                            ud->client_->model_rate,
+                                                            10, &err);
+                      if (err != 0) {
+                          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(ud->session),
+                                            SWITCH_LOG_ERROR,
+                                            "GRPC stream: resample %d->%d err=%d\n",
+                                            ud->client_->channel_rate,
+                                            ud->client_->model_rate, err);
+                          return SWITCH_FALSE;
+                      }
+                  } else {
+                      ud->rresampler = nullptr;
+                  }
 
-                    if (ud->client_->model_rate != ud->client_->channel_rate) {
-                        // Channel rate ?
-                        switch_resample_create(&ud->rresampler,
-                                               ud->client_->channel_rate,
-                                               ud->client_->model_rate,
-                                               320, 10, 1); // TODO
+                  // ---- speex_preprocess: AGC + denoise ----
+                  // 20 ms frames: 320 samples @ 16k, 160 @ 8k, 480 @ 24k.
+                  ud->pp_frame_size = ud->client_->model_rate / 50;
+                  ud->pp = speex_preprocess_state_init((int)ud->pp_frame_size,
+                                                      ud->client_->model_rate);
+                  if (!ud->pp) {
+                      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(ud->session),
+                                        SWITCH_LOG_ERROR,
+                                        "GRPC stream: preprocess init failed\n");
+                      return SWITCH_FALSE;
+                  }
 
+                  int enable = 1, disable = 0;
+                  ud->hpf_prev_in = ud->hpf_prev_out = 0.0f;
 
-                        switch_log_printf(
-                            SWITCH_CHANNEL_SESSION_LOG(ud->session),
-                            SWITCH_LOG_DEBUG,
-                            "GRPC stream: writer resample from %d to %d \n", ud->client_->channel_rate,
-                            ud->client_->model_rate);
-                    } else {
-                        ud->rresampler = nullptr;
-                    }
-                } catch (...) {
-                    switch_log_printf(
-                        SWITCH_CHANNEL_SESSION_LOG(ud->session),
-                        SWITCH_LOG_CRIT,
-                        "GRPC stream: SWITCH_ABC_TYPE_INIT \n");
-                }
+                  spx_int32_t agc_target      = 18000;
+                  spx_int32_t agc_max_gain    = 20;
+                  spx_int32_t noise_suppress  = -20;
+                  spx_int32_t agc_incr        = 6;
+                  spx_int32_t agc_decr        = -20;
 
-                break;
-            }
+                  const float hpf_fc = 120.0f;
+                  const float sr    = (float)ud->client_->model_rate;
+                  const float rc    = 1.0f / (2.0f * (float)M_PI * hpf_fc);
+                  const float dt    = 1.0f / sr;
+                  ud->hpf_alpha     = rc / (rc + dt);
 
-            case SWITCH_ABC_TYPE_CLOSE: {
-                // cleanup
-                try {
-                    if (ud->rresampler) {
-                        switch_resample_destroy(&ud->rresampler);
-                    }
+                  speex_preprocess_ctl(ud->pp, SPEEX_PREPROCESS_SET_DENOISE,       &enable);
+                  speex_preprocess_ctl(ud->pp, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &noise_suppress);
+                  speex_preprocess_ctl(ud->pp, SPEEX_PREPROCESS_SET_AGC,           &enable);
+                  speex_preprocess_ctl(ud->pp, SPEEX_PREPROCESS_SET_AGC_TARGET,    &agc_target);
+                  speex_preprocess_ctl(ud->pp, SPEEX_PREPROCESS_SET_AGC_MAX_GAIN,  &agc_max_gain);
+                  speex_preprocess_ctl(ud->pp, SPEEX_PREPROCESS_SET_AGC_INCREMENT, &agc_incr);
+                  speex_preprocess_ctl(ud->pp, SPEEX_PREPROCESS_SET_AGC_DECREMENT, &agc_decr);
+                  speex_preprocess_ctl(ud->pp, SPEEX_PREPROCESS_SET_VAD,           &disable);
 
-                    ud->client_->Finish();
-                } catch (...) {
-                    switch_log_printf(
-                        SWITCH_CHANNEL_SESSION_LOG(ud->session),
-                        SWITCH_LOG_CRIT,
-                        "GRPC stream: SWITCH_ABC_TYPE_CLOSE \n");
-                }
-                break;
-            }
+                  ud->pp_buf = new spx_int16_t[ud->pp_frame_size];
+                  ud->pp_buf_len = 0;
 
-            case SWITCH_ABC_TYPE_READ_REPLACE: {
-                uint8_t data[SWITCH_RECOMMENDED_BUFFER_SIZE];
-                switch_frame_t *read_frame;
-                switch_status_t status;
+                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(ud->session),
+                                    SWITCH_LOG_DEBUG,
+                                    "GRPC stream: preprocess AGC(target=%d, max=%ddB) + denoise(%ddB), "
+                                    "frame=%zu samples @ %d Hz\n",
+                                    agc_target, agc_max_gain, noise_suppress,
+                                    ud->pp_frame_size, ud->client_->model_rate);
+              } catch (...) {
+                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(ud->session),
+                                    SWITCH_LOG_CRIT,
+                                    "GRPC stream: SWITCH_ABC_TYPE_INIT exception\n");
+              }
+              break;
+          }
 
-                try {
-                    read_frame = switch_core_media_bug_get_read_replace_frame(bug);
-                    bool ok;
+          case SWITCH_ABC_TYPE_CLOSE: {
+              try {
+                  if (ud->rresampler) {
+                      speex_resampler_destroy(ud->rresampler);
+                      ud->rresampler = nullptr;
+                  }
+                  if (ud->pp) {
+                      speex_preprocess_state_destroy(ud->pp);
+                      ud->pp = nullptr;
+                  }
+                  if (ud->pp_buf) {
+                      delete[] ud->pp_buf;
+                      ud->pp_buf = nullptr;
+                  }
+                  ud->client_->Finish();
+              } catch (...) {
+                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(ud->session),
+                                    SWITCH_LOG_CRIT,
+                                    "GRPC stream: SWITCH_ABC_TYPE_CLOSE exception\n");
+              }
+              break;
+          }
 
-                    if (!read_frame || !read_frame->datalen || switch_test_flag(read_frame, SFF_CNG)) {
-                        switch_log_printf(
-                            SWITCH_CHANNEL_SESSION_LOG(ud->session),
-                            SWITCH_LOG_DEBUG,
-                            "GRPC stream: skip SFF_CNG\n");
-                        break;
-                    }
+          case SWITCH_ABC_TYPE_READ: {
+              uint8_t data[SWITCH_RECOMMENDED_BUFFER_SIZE];
+              switch_frame_t read_frame = {0};
+              read_frame.data = data;
+              read_frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
 
-                    if (ud->rresampler) {
-                        uint8_t resample_data[SWITCH_RECOMMENDED_BUFFER_SIZE];
-                        auto data = (int16_t *) read_frame->data;
-                        switch_resample_process(ud->rresampler, data, (int) read_frame->datalen / 2);
-                        uint32_t linear_len = ud->rresampler->to_len * 2;
-                        memcpy(resample_data, ud->rresampler->to, linear_len);
+              try {
+                  switch_status_t status = switch_core_media_bug_read(bug, &read_frame, SWITCH_FALSE);
+                  if (status != SWITCH_STATUS_SUCCESS && status != SWITCH_STATUS_BREAK) {
+                      return SWITCH_TRUE;
+                  }
+                  if (!read_frame.datalen || switch_test_flag(&read_frame, SFF_CNG)) {
+                      break;
+                  }
 
-                        ok = ud->client_->Write(resample_data, linear_len);
-                    } else {
-                        ok = ud->client_->Write(read_frame->data, read_frame->datalen);
-                    }
+                  // Step 1: resample (or pass-through) into a working buffer at model_rate.
+                  spx_int16_t work[SWITCH_RECOMMENDED_BUFFER_SIZE];
+                  spx_uint32_t work_len;
+                  if (ud->rresampler) {
+                      spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE;
+                      spx_uint32_t in_len  = read_frame.samples;
+                      speex_resampler_process_interleaved_int(
+                          ud->rresampler,
+                          static_cast<const spx_int16_t *>(read_frame.data),
+                          &in_len,
+                          &work[0],
+                          &out_len);
+                      work_len = out_len;
+                  } else {
+                      work_len = read_frame.datalen / 2;
+                      if (work_len > SWITCH_RECOMMENDED_BUFFER_SIZE) {
+                          work_len = SWITCH_RECOMMENDED_BUFFER_SIZE;
+                      }
+                      memcpy(work, read_frame.data, work_len * sizeof(spx_int16_t));
+                  }
 
-                    if (!ok) {
-                        switch_log_printf(
-                            SWITCH_CHANNEL_SESSION_LOG(ud->session),
-                            SWITCH_LOG_CRIT,
-                            "GRPC stream: error send \n");
-                        return SWITCH_FALSE;
-                    }
-                } catch (...) {
-                    switch_log_printf(
-                        SWITCH_CHANNEL_SESSION_LOG(ud->session),
-                        SWITCH_LOG_CRIT,
-                        "GRPC stream: SWITCH_ABC_TYPE_WRITEs \n");
-                }
-                break;
-            }
-        }
+                  // Step 2: framer — speex_preprocess_run wants exactly pp_frame_size samples.
+                  //         Accumulate, process on each full frame, send over gRPC.
+                  spx_uint32_t consumed = 0;
+                  while (consumed < work_len) {
+                      size_t need = ud->pp_frame_size - ud->pp_buf_len;
+                      size_t avail = work_len - consumed;
+                      size_t take = (avail < need) ? avail : need;
 
-        return SWITCH_TRUE;
-    }
+                      memcpy(ud->pp_buf + ud->pp_buf_len,
+                             work + consumed,
+                             take * sizeof(spx_int16_t));
+                      ud->pp_buf_len += take;
+                      consumed       += take;
+
+                      if (ud->pp_buf_len == ud->pp_frame_size) {
+                          // in-place denoise + AGC
+                          // 1-pole HPF @ ~120 Hz, alpha = RC/(RC+dt), RC=1/(2*pi*fc)
+                          for (size_t i = 0; i < ud->pp_frame_size; i++) {
+                              float x = (float)ud->pp_buf[i];
+                              float y = ud->hpf_alpha * (ud->hpf_prev_out + x - ud->hpf_prev_in);
+                              ud->hpf_prev_in = x;
+                              ud->hpf_prev_out = y;
+                              if (y >  32767.0f) y =  32767.0f;
+                              else if (y < -32768.0f) y = -32768.0f;
+                              ud->pp_buf[i] = (spx_int16_t)y;
+                          }
+
+                          speex_preprocess_run(ud->pp, ud->pp_buf);
+
+                          bool ok = ud->client_->Write(ud->pp_buf,
+                                                       ud->pp_frame_size * sizeof(spx_int16_t));
+                          ud->pp_buf_len = 0;
+                          if (!ok) {
+                              switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(ud->session),
+                                                SWITCH_LOG_CRIT,
+                                                "GRPC stream: error send\n");
+                              return SWITCH_FALSE;
+                          }
+                      }
+                  }
+              } catch (...) {
+                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(ud->session),
+                                    SWITCH_LOG_CRIT,
+                                    "GRPC stream: SWITCH_ABC_TYPE_READ exception\n");
+              }
+              break;
+          }
+      }
+
+      return SWITCH_TRUE;
+  }
 
 
     static switch_bool_t recognizer_audio_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type) {
@@ -1852,7 +1941,7 @@ namespace mod_grpc {
         int argc = 0;
         size_t voice_len = 0;
         switch_media_bug_t *bug = nullptr;
-        switch_media_bug_flag_t flags = SMBF_READ_REPLACE;
+        switch_media_bug_flag_t flags = SMBF_READ_STREAM;
         mod_grpc::VoiceBotStream *ud = nullptr;
         switch_frame_t write_frame = {0};
         void *abuf = NULL;
