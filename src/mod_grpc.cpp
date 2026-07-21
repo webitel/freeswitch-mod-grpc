@@ -1589,8 +1589,8 @@ namespace mod_grpc {
                   int enable = 1, disable = 0;
                   ud->hpf_prev_in = ud->hpf_prev_out = 0.0f;
 
-                  spx_int32_t agc_target      = 18000;
-                  spx_int32_t agc_max_gain    = 20;
+                  spx_int32_t agc_target      = 10000;
+                  spx_int32_t agc_max_gain    = 15;
                   spx_int32_t noise_suppress  = -20;
                   spx_int32_t agc_incr        = 6;
                   spx_int32_t agc_decr        = -20;
