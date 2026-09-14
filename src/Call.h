@@ -516,6 +516,7 @@ protected:
 
     void setOnCreateAttr() {
         addIfExists(body_, "sip_id", "variable_sip_h_X-Webitel-Uuid");
+        addIfExists(body_, "ua", "variable_sip_user_agent");
         auto grantee = get_str(switch_event_get_header(e_, "variable_wbt_grantee_id"));
         if (!grantee.empty()) {
             addAttribute("grantee_id", std::stoi(grantee));
