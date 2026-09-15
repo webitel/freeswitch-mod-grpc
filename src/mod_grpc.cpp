@@ -335,6 +335,22 @@ namespace mod_grpc {
                     bridged = 0;
                 }
 
+                // TODO Meeting ?
+                if (switch_channel_get_variable(channel, "variable_sip_h_X-Webitel-Meeting")) {
+                    switch_core_session_request_video_refresh(session);
+                    switch_core_media_gen_key_frame(session);
+
+                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "refresh bridge video %s && %s\n",
+                                      request->leg_a_id().c_str(), request->leg_b_id().c_str());
+
+                    switch_core_session_t *bsession_a = switch_core_session_locate(request->leg_a_id().c_str());
+                    if (bsession_a) {
+                        switch_core_session_request_video_refresh(bsession_a);
+                        switch_core_media_gen_key_frame(bsession_a);
+                        switch_core_session_rwunlock(bsession_a);
+                    }
+                }
+
                 switch_core_session_rwunlock(session);
             } else {
                 bridged = 0;
