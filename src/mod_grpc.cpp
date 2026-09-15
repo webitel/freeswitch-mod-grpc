@@ -335,8 +335,8 @@ namespace mod_grpc {
                     bridged = 0;
                 }
 
-                // TODO Meeting ?
-                if (switch_channel_get_variable(channel, "variable_sip_h_X-Webitel-Meeting")) {
+                // TODO Meeting ? test
+                if (true or switch_channel_get_variable(channel, "variable_sip_h_X-Webitel-Meeting")) {
                     switch_core_session_request_video_refresh(session);
                     switch_core_media_gen_key_frame(session);
 
