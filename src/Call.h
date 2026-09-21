@@ -696,6 +696,7 @@ template<>
 class CallEvent<Progress> : public BaseCallEvent {
 public:
     explicit CallEvent(switch_event_t *e) : BaseCallEvent(Progress, e) {
+        addIfExists(body_, "ua", "variable_sip_user_agent");
     };
 };
 
