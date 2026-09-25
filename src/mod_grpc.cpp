@@ -3111,6 +3111,51 @@ namespace mod_grpc {
         return SWITCH_STATUS_SUCCESS;
     }
 
+    SWITCH_STANDARD_APP(wbt_record_session_function) {
+        if (switch_core_media_bug_count(session, "record_session") > 0) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "already record\n");
+            return;
+        }
+
+        char *array[5] = {0};
+        char *args = NULL;
+        int argc;
+
+        char *path = NULL;
+        uint32_t limit = 0;
+        switch_event_t *vars = NULL;
+        char *new_fp = NULL;
+
+        if (zstr(data)) {
+            return;
+        }
+
+        args = switch_core_session_strdup(session, data);
+        argc = switch_split(args, ' ', array);
+
+        if (argc == 0) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "usage: <path> [+<timeout>] [{var1=x,var2=y}]\n");
+        }
+
+        path = array[0];
+
+        if (argc > 1) {
+            if (*array[1] == '+') {
+                limit = atoi(++array[1]);
+                if (argc > 2) {
+                    switch_url_decode(array[2]);
+                    switch_event_create_brackets(array[2], '{', '}',',', &vars, &new_fp, SWITCH_FALSE);
+                }
+            } else {
+                switch_url_decode(array[1]);
+                switch_event_create_brackets(array[1], '{', '}',',', &vars, &new_fp, SWITCH_FALSE);
+            }
+        }
+
+        switch_ivr_record_session_event(session, path, limit, NULL, vars);
+        switch_event_safe_destroy(vars);
+    }
+
     SWITCH_MODULE_LOAD_FUNCTION(mod_grpc_load) {
         try {
             *module_interface = switch_loadable_module_create_module_interface(pool, modname);
@@ -3145,6 +3190,11 @@ namespace mod_grpc {
                            wbt_blind_transfer_function, "", SAF_NONE);
             SWITCH_ADD_APP(app_interface, "wbt_queue_playback", "wbt_queue_playback", "wbt_queue_playback",
                            wbt_queue_playback_function, "", SAF_NONE);
+
+            SWITCH_ADD_APP(app_interface, "wbt_record_session", "Record Session", "Starts a background recording of the entire session",
+                            wbt_record_session_function, "<path> [+<timeout>]", SAF_MEDIA_TAP);
+
+
             SWITCH_ADD_APP(
                 app_interface,
                 BUG_STREAM_NAME,
