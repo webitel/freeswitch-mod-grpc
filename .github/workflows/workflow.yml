@@ -62,7 +62,7 @@ jobs:
         postinstall: deploy/debian/postinst.sh
 
       args: |
-        -DMOD_BUILD_VERSION="${{ github.run_number }}, commit: ${{ github.sha }}/${{ github.ref_name }}" \
+        -DMOD_BUILD_VERSION="${{ needs.version.outputs.full-version }}, commit: ${{ needs.version.outputs.commit }}/${{ needs.version.outputs.branch }}" \
         -DFREESWITCH_INCLUDE_DIR=/usr/include/freeswitch \
         -DINSTALL_MOD_DIR=/usr/local/freeswitch/mod \
         -DCMAKE_BUILD_TYPE=Release
