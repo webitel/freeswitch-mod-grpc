@@ -4,7 +4,7 @@ version: 1
 source:
   repository: webitel/reusable-configs
   config: clang/sync.yml
-  sha: 7cbd4e6072e30e64da55427fa7fb1ef23c246fdc
+  sha: ef4e42032ca6d3cd02a819e6978ed645e2e227b3
 files:
   .github/workflows/backport-trigger.yml:
     source: common/workflows/backport-trigger.yml.njk
@@ -20,4 +20,4 @@ files:
     sha256: 5724ba1387126a3a4cb028be6f76246f4293b386f2d96c6c2480621e9231f411
   .github/workflows/workflow.yml:
     source: clang/workflows/freeswitch/workflow.yml.njk
-    sha256: d23ec9204c43c34a25050e4008b3eed421854c4e9ee3ae230ea70c2e8a506f7c
+    sha256: ef2698f8c7c92d9f6a0f5f9be3e6c9a44225adc53ac3b800f42355f7900e02b2
