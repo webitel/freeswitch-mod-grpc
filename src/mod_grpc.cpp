@@ -1,6 +1,10 @@
 #include "mod_grpc.h"
 
+#include <array>
+#include <charconv>
+#include <cstdint>
 #include <iostream>
+#include <system_error>
 #include <thread>
 #include <memory>
 #include <string>
@@ -3111,6 +3115,137 @@ namespace mod_grpc {
         return SWITCH_STATUS_SUCCESS;
     }
 
+    constexpr const char* kRecordBugName = "session_record";
+    constexpr const char* kForceKey = "force";
+    constexpr const char* kForceChannelVar = "wbt_record_force";
+    constexpr const char* kVarsSkipped = "wbt_record_skipped";
+    constexpr const char* kVarSkipReason = "wbt_record_skip_reason";
+    constexpr const char* kUsage = "usage: <path> [+<timeout>] [{var1=x,var2=y}]";
+
+    struct EventDeleter {
+        void operator()(switch_event_t* e) const noexcept {
+            if (e) switch_event_destroy(&e);
+        }
+    };
+
+    using EventPtr = std::unique_ptr<switch_event_t,EventDeleter>;
+
+    struct RecordArgs {
+        const char* path = nullptr;
+        uint32_t limit = 0;
+        bool force = false;
+        EventPtr vars;
+    };
+
+    enum class DupReason {None, OwnChannel, PartnerChannel};
+
+    bool parseLimit(std::string_view s, uint32_t& out) {
+        if (s.empty()) return false;
+
+        const char* end = s.data() + s.size();
+        const auto [ptr, ec] = std::from_chars(s.data(), end, out);
+
+        return ec == std::errc{} && ptr == end;
+    }
+
+    bool parseArgs(switch_core_session_t* session, char* data, RecordArgs& out) {
+        std::array<char*, 5> tok{};
+        const int argc = switch_separate_string(data, ' ', tok.data(), tok.size());
+
+        if (argc < 1 || zstr(tok[0])) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s\n", kUsage);
+            return false;
+        }
+        out.path = tok[0];
+
+        int idx = 1;
+        if (idx < argc && *tok[idx] == '+') {
+            if (!parseLimit(tok[idx] + 1, out.limit)) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid timeout '%s'. %s\n", tok[idx], kUsage);
+                return false;
+            }
+            ++idx;
+        }
+
+        if (idx < argc) {
+            char* raw = tok[idx];
+            switch_url_decode(raw);
+
+            switch_event_t* ev = nullptr;
+            char* rest = nullptr;
+            const auto st = switch_event_create_brackets(raw, '{', '}', ',', &ev, &rest, SWITCH_FALSE);
+            out.vars.reset(ev);
+
+            if (st != SWITCH_STATUS_SUCCESS || !out.vars) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid vars block '%s'. %s\n", raw, kUsage);
+                return false;
+            }
+
+            if (const char* f = switch_event_get_header(out.vars.get(), kForceKey)) {
+                out.force = switch_true(f);
+                switch_event_del_header(out.vars.get(), kForceKey);
+            }
+        }
+
+        if (!out.force) {
+            out.force = switch_channel_var_true(switch_core_session_get_channel(session), kForceChannelVar);
+        }
+
+        return true;
+    }
+
+    DupReason detectDuplicate(switch_core_session_t* session) {
+        if (switch_core_media_bug_count(session, kRecordBugName) > 0) {
+            return DupReason::OwnChannel;
+        }
+
+        switch_core_session_t* peer = nullptr;
+        if (switch_core_session_get_partner(session, &peer) == SWITCH_STATUS_SUCCESS) {
+            const bool recorded = switch_core_media_bug_count(peer, kRecordBugName) > 0;
+            switch_core_session_rwunlock(peer);
+            if (recorded) return DupReason::PartnerChannel;
+        }
+
+        return DupReason::None;
+    }
+
+    void markSkipped(switch_core_session_t* session, DupReason reason){
+        switch_channel_t* ch = switch_core_session_get_channel(session);
+        switch_channel_set_variable(ch, kVarsSkipped, "true");
+        switch_channel_set_variable(ch, kVarSkipReason, reason == DupReason::OwnChannel ? "own_channel" : "partner_channel");
+    }
+
+    SWITCH_STANDARD_APP(wbt_record_session_function) {
+        if (zstr(data)) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s\n", kUsage);
+            return;
+        }
+
+        char* args = switch_core_session_strdup(session, data);
+
+        RecordArgs ra;
+        if (!parseArgs(session, args, ra)) {
+            return;
+        }
+
+        if (!ra.force) {
+            if (const auto dup = detectDuplicate(session); dup != DupReason::None) {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+                                    "record skipped (%s already recording), path=%s\n",
+                                    dup == DupReason::OwnChannel ? "this channel" : "partner channel",
+                                    ra.path);
+                markSkipped(session, dup);
+                return;
+                }
+            }
+
+        const auto st = switch_ivr_record_session_event(session, ra.path, ra.limit, nullptr, ra.vars.get());
+        if (st != SWITCH_STATUS_SUCCESS) {
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+                                "failed to start record, path=%s status=%d\n", ra.path, static_cast<int>(st));
+        }
+    }
+
     SWITCH_MODULE_LOAD_FUNCTION(mod_grpc_load) {
         try {
             *module_interface = switch_loadable_module_create_module_interface(pool, modname);
@@ -3145,6 +3280,11 @@ namespace mod_grpc {
                            wbt_blind_transfer_function, "", SAF_NONE);
             SWITCH_ADD_APP(app_interface, "wbt_queue_playback", "wbt_queue_playback", "wbt_queue_playback",
                            wbt_queue_playback_function, "", SAF_NONE);
+
+            SWITCH_ADD_APP(app_interface, "wbt_record_session", "Record Session", "Starts a background recording of the entire session",
+                            wbt_record_session_function, "<path> [+<timeout>]", SAF_MEDIA_TAP);
+
+
             SWITCH_ADD_APP(
                 app_interface,
                 BUG_STREAM_NAME,
