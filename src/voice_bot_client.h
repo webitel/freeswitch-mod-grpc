@@ -112,6 +112,10 @@ public:
     };
 
     bool Finish() {
+        if (finished) {
+            return true;
+        }
+        finished = true;
         context.TryCancel();
         rw->WritesDone();
         auto status = rw->Finish();
@@ -192,6 +196,7 @@ public:
     switch_mutex_t *mutex;
     std::mutex stopMutex;
     bool isBreak = false;
+    bool finished = false;
     google::protobuf::Map<std::string, std::string> vars;
     std::mutex varsMutex;
 
@@ -300,6 +305,10 @@ public:
     };
 
     bool Finish() {
+        if (finished) {
+            return true;
+        }
+        finished = true;
         context.TryCancel();
         rw->WritesDone();
         auto status = rw->Finish();
@@ -324,6 +333,7 @@ private:
     std::mutex stopMutex;
     bool isBreak = false;
     std::thread rt;
+    bool finished = false;
     ai_bots::ConverseRequest request;
     std::string id;
     google::protobuf::Map<std::string, std::string> vars;
