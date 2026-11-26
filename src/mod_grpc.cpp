@@ -1815,6 +1815,7 @@ namespace mod_grpc {
                         }
                         ud->client_->Finish();
                         delete ud->client_;
+                        ud->client_ = nullptr;
                     }
                 } catch (...) {
                     switch_log_printf(
@@ -1822,6 +1823,7 @@ namespace mod_grpc {
                         SWITCH_LOG_CRIT,
                         "GRPC stream: SWITCH_ABC_TYPE_CLOSE \n");
                 }
+                delete ud;
                 break;
             }
 
@@ -1981,7 +1983,7 @@ namespace mod_grpc {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "channel rate %d\n",
                           imp.actual_samples_per_second);
 
-        ud = new mod_grpc::VoiceBotStream;
+        ud = new mod_grpc::VoiceBotStream{};
         ud->client_ = server_->AsyncVoiceBotStream(argv[0], session, model_rate, imp.actual_samples_per_second,
                                                    start_message);
         if (!ud->client_) {
@@ -2086,6 +2088,10 @@ namespace mod_grpc {
         }
         switch_safe_free(mycmd);
         if (ud) {
+            if (ud->client_) {
+                ud->client_->Finish();
+                delete ud->client_;
+            }
             delete ud;
         }
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "done voice bot\n");
@@ -2895,13 +2901,14 @@ namespace mod_grpc {
                             SWITCH_CHANNEL_SESSION_LOG(lsession), SWITCH_LOG_DEBUG, "channel rate %d\n",
                             imp.actual_samples_per_second);
 
-                        ud = new mod_grpc::RecognizeStream;
+                        ud = new mod_grpc::RecognizeStream{};
                         ud->client_ = server_->AsyncRecognize(argv[2], lsession, model_rate,
                                                               imp.actual_samples_per_second, dialog_id);
                         if (!ud->client_) {
                             switch_log_printf(
                                 SWITCH_CHANNEL_SESSION_LOG(lsession), SWITCH_LOG_ERROR, "not found bot connection %s\n",
                                 mycmd);
+                            delete ud;
                             switch_core_session_rwunlock(lsession);
                             goto done;
                         }
@@ -2964,6 +2971,10 @@ namespace mod_grpc {
                         if (!ud->client_->Listen(5)) {
                             ud->client_->Finish();
                             delete ud->client_;
+                            if (ud->vad) {
+                                switch_vad_destroy(&ud->vad);
+                            }
+                            delete ud;
                             switch_log_printf(
                                 SWITCH_CHANNEL_SESSION_LOG(lsession), SWITCH_LOG_ERROR, "timeout connection %s\n",
                                 mycmd);
@@ -2983,6 +2994,15 @@ namespace mod_grpc {
                             switch_log_printf(
                                 SWITCH_CHANNEL_SESSION_LOG(lsession), SWITCH_LOG_ERROR,
                                 "Can not add media bug.  Media not enabled on channel\n");
+                            ud->client_->Finish();
+                            delete ud->client_;
+                            if (ud->rresampler) {
+                                speex_resampler_destroy(ud->rresampler);
+                            }
+                            if (ud->vad) {
+                                switch_vad_destroy(&ud->vad);
+                            }
+                            delete ud;
                             switch_core_session_rwunlock(lsession);
                             goto done;
                         }
